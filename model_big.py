@@ -1,12 +1,5 @@
-"""
-Copyright (c) 2018, National Institute of Informatics
-All rights reserved.
-Author: Huy H. Nguyen
------------------------------------------------------
-Script for Capsule-Forensics model
-"""
-
 import sys
+
 sys.setrecursionlimit(15000)
 import torch
 import torch.nn.functional as F
@@ -15,19 +8,21 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 import torchvision.models as models
 
-NO_CAPS=10
+NO_CAPS = 10
+
 
 class StatsNet(nn.Module):
     def __init__(self):
         super(StatsNet, self).__init__()
 
     def forward(self, x):
-        x = x.view(x.data.shape[0], x.data.shape[1], x.data.shape[2]*x.data.shape[3])
+        x = x.view(x.data.shape[0], x.data.shape[1], x.data.shape[2] * x.data.shape[3])
 
         mean = torch.mean(x, 2)
         std = torch.std(x, 2)
 
         return torch.stack((mean, std), dim=1)
+
 
 class View(nn.Module):
     def __init__(self, *shape):
@@ -50,41 +45,43 @@ class VggExtractor(nn.Module):
             self.vgg_1.eval()
 
     def Vgg(self, vgg, begin, end):
-        features = nn.Sequential(*list(vgg.features.children())[begin:(end+1)])
+        features = nn.Sequential(*list(vgg.features.children())[begin : (end + 1)])
         return features
 
     def freeze_gradient(self, begin=0, end=9):
-        for i in range(begin, end+1):
+        for i in range(begin, end + 1):
             self.vgg_1[i].requires_grad = False
 
     def forward(self, input):
         return self.vgg_1(input)
 
+
 class FeatureExtractor(nn.Module):
     def __init__(self):
         super(FeatureExtractor, self).__init__()
 
-        self.capsules = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(256, 64, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.Conv2d(64, 16, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm2d(16),
-                nn.ReLU(),
-                StatsNet(),
-
-                nn.Conv1d(2, 8, kernel_size=5, stride=2, padding=2),
-                nn.BatchNorm1d(8),
-                nn.Conv1d(8, 1, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm1d(1),
-                View(-1, 8),
+        self.capsules = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv2d(256, 64, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm2d(64),
+                    nn.ReLU(),
+                    nn.Conv2d(64, 16, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm2d(16),
+                    nn.ReLU(),
+                    StatsNet(),
+                    nn.Conv1d(2, 8, kernel_size=5, stride=2, padding=2),
+                    nn.BatchNorm1d(8),
+                    nn.Conv1d(8, 1, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm1d(1),
+                    View(-1, 8),
                 )
-                for _ in range(NO_CAPS)]
+                for _ in range(NO_CAPS)
+            ]
         )
 
     def squash(self, tensor, dim):
-        squared_norm = (tensor ** 2).sum(dim=dim, keepdim=True)
+        squared_norm = (tensor**2).sum(dim=dim, keepdim=True)
         scale = squared_norm / (1 + squared_norm)
         return scale * tensor / (torch.sqrt(squared_norm))
 
@@ -96,17 +93,27 @@ class FeatureExtractor(nn.Module):
 
         return self.squash(output, dim=-1)
 
+
 class RoutingLayer(nn.Module):
-    def __init__(self, gpu_id, num_input_capsules, num_output_capsules, data_in, data_out, num_iterations):
+    def __init__(
+        self,
+        gpu_id,
+        num_input_capsules,
+        num_output_capsules,
+        data_in,
+        data_out,
+        num_iterations,
+    ):
         super(RoutingLayer, self).__init__()
 
         self.gpu_id = gpu_id
         self.num_iterations = num_iterations
-        self.route_weights = nn.Parameter(torch.randn(num_output_capsules, num_input_capsules, data_out, data_in))
-
+        self.route_weights = nn.Parameter(
+            torch.randn(num_output_capsules, num_input_capsules, data_out, data_in)
+        )
 
     def squash(self, tensor, dim):
-        squared_norm = (tensor ** 2).sum(dim=dim, keepdim=True)
+        squared_norm = (tensor**2).sum(dim=dim, keepdim=True)
         scale = squared_norm / (1 + squared_norm)
         return scale * tensor / (torch.sqrt(squared_norm))
 
@@ -117,7 +124,7 @@ class RoutingLayer(nn.Module):
         # x[b, in_caps, data]
 
         if random:
-            noise = Variable(0.01*torch.randn(*self.route_weights.size()))
+            noise = Variable(0.01 * torch.randn(*self.route_weights.size()))
             if self.gpu_id >= 0:
                 noise = noise.cuda(self.gpu_id)
             route_weights = self.route_weights + noise
@@ -134,11 +141,10 @@ class RoutingLayer(nn.Module):
         # priors[b, out_caps, in_caps, data_out, 1]
 
         if dropout > 0.0:
-            drop = Variable(torch.FloatTensor(*priors.size()).bernoulli(1.0- dropout))
+            drop = Variable(torch.FloatTensor(*priors.size()).bernoulli(1.0 - dropout))
             if self.gpu_id >= 0:
                 drop = drop.cuda(self.gpu_id)
             priors = priors * drop
-            
 
         logits = Variable(torch.zeros(*priors.size()))
         # logits[b, out_caps, in_caps, data_out, 1]
@@ -160,7 +166,7 @@ class RoutingLayer(nn.Module):
         outputs = outputs.squeeze()
 
         if len(outputs.shape) == 3:
-            outputs = outputs.transpose(2, 1).contiguous() 
+            outputs = outputs.transpose(2, 1).contiguous()
         else:
             outputs = outputs.unsqueeze_(dim=0).transpose(2, 1).contiguous()
         # outputs[b, data_out, out_caps]
@@ -176,13 +182,20 @@ class CapsuleNet(nn.Module):
         self.fea_ext = FeatureExtractor()
         self.fea_ext.apply(self.weights_init)
 
-        self.routing_stats = RoutingLayer(gpu_id=gpu_id, num_input_capsules=NO_CAPS, num_output_capsules=num_class, data_in=8, data_out=4, num_iterations=2)
+        self.routing_stats = RoutingLayer(
+            gpu_id=gpu_id,
+            num_input_capsules=NO_CAPS,
+            num_output_capsules=num_class,
+            data_in=8,
+            data_out=4,
+            num_iterations=2,
+        )
 
     def weights_init(self, m):
         classname = m.__class__.__name__
-        if classname.find('Conv') != -1:
+        if classname.find("Conv") != -1:
             m.weight.data.normal_(0.0, 0.02)
-        elif classname.find('BatchNorm') != -1:
+        elif classname.find("BatchNorm") != -1:
             m.weight.data.normal_(1.0, 0.02)
             m.bias.data.fill_(0)
 
@@ -215,9 +228,9 @@ class CapsuleLoss(nn.Module):
             self.cross_entropy_loss.cuda(gpu_id)
 
     def forward(self, classes, labels):
-        loss_t = self.cross_entropy_loss(classes[:,0,:], labels)
+        loss_t = self.cross_entropy_loss(classes[:, 0, :], labels)
 
         for i in range(classes.size(1) - 1):
-            loss_t = loss_t + self.cross_entropy_loss(classes[:,i+1,:], labels)
+            loss_t = loss_t + self.cross_entropy_loss(classes[:, i + 1, :], labels)
 
         return loss_t
