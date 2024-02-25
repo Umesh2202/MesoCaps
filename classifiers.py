@@ -28,9 +28,11 @@ class Classifier:
         Xten = Xten.permute(0, 3, 1, 2)
         yten = torch.tensor(y)
         pred = predict_cap(Xten, yten)
+        prob = self.model.predict(x) >= 0.5
+        avg_prob = float(float(pred + prob) / 2)
         if x.size == 0:
             return []
-        elif self.model.predict(x) >= 0.5:
+        elif avg_prob >= 0.5:
             return 1
         else:
             return 0
